@@ -11,6 +11,7 @@ from collections import deque
 from typing import Any
 
 from . import config
+from . import git
 from .messenger import Messenger
 
 logger = logging.getLogger(__name__)
@@ -306,6 +307,7 @@ async def startup_all_projects() -> list[tuple[str, bool, str]]:
     for project in config.PROJECTS:
         project_name = project.get('project_name')
         project_workdir = project.get('project_workdir')
+        project_repo = project.get('project_repo')
         project_up = project.get('project_up')
         project_endpoint_url = project.get('project_endpoint_url')
         project_ports = project.get('project_ports')
@@ -314,11 +316,30 @@ async def startup_all_projects() -> list[tuple[str, bool, str]]:
             logger.info(f"[startup] Skipping {project_name} - no project_up command configured")
             continue
 
-        if not project_workdir or not os.path.exists(project_workdir):
-            msg = f"Workdir not found: {project_workdir}"
+        if not project_workdir:
+            msg = f"Workdir not configured"
             logger.warning(f"[startup] Skipping {project_name} - {msg}")
             results.append((project_name, False, msg))
             continue
+
+        # Clone repository if workdir doesn't exist
+        if not os.path.exists(project_workdir):
+            if not project_repo:
+                msg = f"Workdir not found and no project_repo configured: {project_workdir}"
+                logger.warning(f"[startup] Skipping {project_name} - {msg}")
+                results.append((project_name, False, msg))
+                continue
+
+            logger.info(f"[startup] Workdir not found for {project_name}, cloning from {project_repo}...")
+            clone_success = await git.clone_repository_if_needed(
+                messenger=None, context=None,
+                project_repo=project_repo, project_workdir=project_workdir
+            )
+            if not clone_success:
+                msg = f"Failed to clone repository: {project_repo}"
+                logger.error(f"[startup] {project_name} - {msg}")
+                results.append((project_name, False, msg))
+                continue
 
         logger.info(f"[startup] Starting project {project_name}...")
 

@@ -16,15 +16,20 @@ async def clone_repository_if_needed(messenger: Messenger, context: Any, project
     """Clone repository if project directory doesn't exist.
 
     Args:
-        messenger: Platform-specific messenger for sending replies
-        context: Platform-specific context (Telegram update, Lark message dict, etc.)
+        messenger: Platform-specific messenger for sending replies (can be None for silent mode)
+        context: Platform-specific context (Telegram update, Lark message dict, etc.) (can be None for silent mode)
         project_repo: Git repository URL
         project_workdir: Working directory for the project
     """
     if os.path.exists(project_workdir):
         return True
 
-    await messenger.reply(context, f"Project directory not found. Cloning {project_repo}...")
+    # Helper to send message only if messenger is available
+    async def send_msg(msg: str):
+        if messenger and context:
+            await messenger.reply(context, msg)
+
+    await send_msg(f"Project directory not found. Cloning {project_repo}...")
     logger.info(f"Cloning {project_repo} into {project_workdir}")
 
     try:
@@ -40,19 +45,19 @@ async def clone_repository_if_needed(messenger: Messenger, context: Any, project
         )
 
         if clone_result.returncode != 0:
-            await messenger.reply(context, f"Failed to clone repository:\n{clone_result.stderr[:500]}")
+            await send_msg(f"Failed to clone repository:\n{clone_result.stderr[:500]}")
             return False
 
-        await messenger.reply(context, f"Repository cloned successfully!")
+        await send_msg(f"Repository cloned successfully!")
         logger.info(f"Successfully cloned {project_repo}")
         return True
 
     except subprocess.TimeoutExpired:
-        await messenger.reply(context, "Git clone timed out after 30 minutes")
+        await send_msg("Git clone timed out after 30 minutes")
         return False
     except Exception as e:
         logger.error(f"Error cloning repository: {e}")
-        await messenger.reply(context, f"Error cloning repository: {str(e)}")
+        await send_msg(f"Error cloning repository: {str(e)}")
         return False
 
 

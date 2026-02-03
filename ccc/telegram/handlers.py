@@ -1083,6 +1083,10 @@ async def cmd_up(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             claude.clear_thread_worktree(existing_key)
             logger.info(f"Cleared old thread association {existing_key} for project {project_name}")
 
+    # Clone repository if needed
+    if not await git.clone_repository_if_needed(messenger, update, project_repo, project_workdir):
+        return
+
     # Clean up workdir and pull from specified branch before spinning up
     await reply(update, f"Switching to branch: {branch}...")
     if not await git.refresh_to_main_branch(messenger, update, project_workdir, branch):
