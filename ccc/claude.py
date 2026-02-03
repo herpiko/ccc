@@ -64,7 +64,8 @@ async def run_claude_query(prompt: str, system_prompt: str, cwd: str, resume: st
         permission_mode='bypassPermissions',
         cwd=cwd,
         setting_sources=["project"],
-        resume=resume
+        resume=resume,
+        max_buffer_size=10 * 1024 * 1024  # 10MB to handle large git diffs
     )
 
     logger.info(f"Starting Claude query in {cwd}" + (f" (resuming session {resume})" if resume else ""))
@@ -325,7 +326,8 @@ async def initialize_claude_md(messenger: Messenger, context: Any, project_workd
             options = ClaudeAgentOptions(
                 model='opus',
                 permission_mode='bypassPermissions',
-                cwd=project_workdir
+                cwd=project_workdir,
+                max_buffer_size=10 * 1024 * 1024  # 10MB to handle large git diffs
             )
 
             init_error = None
