@@ -7,7 +7,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 # Global configuration - Shared
-AUTHORIZED_USERS = []
+AUTHORIZED_USERS = []  # Normalized list of dicts: [{"username": "...", "name": "...", "email": "..."}, ...]
 PROJECTS = []
 ASK_RULES = ""
 FEAT_RULES = ""
@@ -27,7 +27,7 @@ LARK_APP_SECRET = ""
 LARK_VERIFICATION_TOKEN = ""
 LARK_ENCRYPT_KEY = ""
 LARK_WEBHOOK_PORT = 8080
-LARK_AUTHORIZED_USERS = []  # List of Lark user open_ids
+LARK_AUTHORIZED_USERS = []  # Normalized list of dicts: [{"id": "...", "name": "...", "email": "..."}, ...]
 LARK_AUTHORIZED_CHATS = []  # List of Lark chat_ids
 
 
@@ -49,7 +49,7 @@ def load_config(config_path: str = None):
 
             # Shared configuration
             PROJECTS = data.get('projects', [])
-            AUTHORIZED_USERS = data.get('authorized_users', [])
+            AUTHORIZED_USERS = _normalize_authorized_users(data.get('authorized_users', []))
             GENERAL_RULES = data.get('general_rules', '')
             ASK_RULES = data.get('ask_rules', '')
             FEAT_RULES = data.get('feat_rules', '')
@@ -85,7 +85,7 @@ def load_config(config_path: str = None):
                 LARK_VERIFICATION_TOKEN = lark_config.get('verification_token', '')
                 LARK_ENCRYPT_KEY = lark_config.get('encrypt_key', '')
                 LARK_WEBHOOK_PORT = lark_config.get('webhook_port', 8080)
-                LARK_AUTHORIZED_USERS = lark_config.get('authorized_users', [])
+                LARK_AUTHORIZED_USERS = _normalize_lark_authorized_users(lark_config.get('authorized_users', []))
                 LARK_AUTHORIZED_CHATS = lark_config.get('authorized_chats', [])
 
             # Logging
@@ -96,7 +96,8 @@ def load_config(config_path: str = None):
 
             logger.info(f"Loaded {len(AUTHORIZED_USERS)} authorized users (shared)")
             for user in AUTHORIZED_USERS:
-                logger.info(f"  - {user}")
+                name_part = f" ({user['name']})" if user.get('name') else ""
+                logger.info(f"  - {user['username']}{name_part}")
 
             if TELEGRAM_BOT_TOKEN:
                 logger.info(f"Telegram configuration loaded")
@@ -118,6 +119,64 @@ def load_config(config_path: str = None):
         PROJECTS = []
         AUTHORIZED_USERS = []
         TELEGRAM_AUTHORIZED_GROUPS = []
+
+
+def _normalize_authorized_users(raw_users: list) -> list[dict]:
+    """Normalize authorized_users to list of dicts with username, name, email."""
+    result = []
+    for entry in raw_users:
+        if isinstance(entry, dict):
+            result.append({
+                "username": entry.get("username", ""),
+                "name": entry.get("name", ""),
+                "email": entry.get("email", ""),
+            })
+        else:
+            # Plain string: treat as username only
+            result.append({"username": str(entry), "name": "", "email": ""})
+    return result
+
+
+def _normalize_lark_authorized_users(raw_users: list) -> list[dict]:
+    """Normalize Lark authorized_users to list of dicts with id, name, email."""
+    result = []
+    for entry in raw_users:
+        if isinstance(entry, dict):
+            result.append({
+                "id": entry.get("id", ""),
+                "name": entry.get("name", ""),
+                "email": entry.get("email", ""),
+            })
+        else:
+            # Plain string: treat as id only
+            result.append({"id": str(entry), "name": "", "email": ""})
+    return result
+
+
+def is_user_authorized(username: str) -> bool:
+    """Check if a username is in the authorized users list."""
+    return any(u["username"] == username for u in AUTHORIZED_USERS)
+
+
+def get_user_info(username: str) -> dict | None:
+    """Get user info dict for a username. Returns {username, name, email} or None."""
+    for u in AUTHORIZED_USERS:
+        if u["username"] == username:
+            return u
+    return None
+
+
+def get_lark_user_info(user_open_id: str) -> dict | None:
+    """Get user info dict for a Lark user. Returns {id, name, email} or None."""
+    for u in LARK_AUTHORIZED_USERS:
+        if u["id"] == user_open_id:
+            return u
+    return None
+
+
+def get_authorized_usernames() -> list[str]:
+    """Get list of authorized usernames (for display)."""
+    return [u["username"] for u in AUTHORIZED_USERS]
 
 
 def get_project(project_name: str) -> dict | None:
@@ -158,8 +217,7 @@ def get_telegram_authorized_group_ids() -> list:
 # Lark-specific helpers
 def is_lark_user_authorized(user_open_id: str) -> bool:
     """Check if a Lark user is authorized."""
-    # Check both shared and Lark-specific authorized users
-    return user_open_id in LARK_AUTHORIZED_USERS
+    return any(u["id"] == user_open_id for u in LARK_AUTHORIZED_USERS)
 
 
 def is_lark_chat_authorized(chat_id: str) -> bool:

@@ -37,7 +37,13 @@ All configuration is in `config.yaml`:
 
 ```yaml
 # Shared configuration
-authorized_users: ["username"]       # Usernames (shared across platforms)
+authorized_users:                    # Usernames (shared across platforms)
+  - username: "username1"            # Required: Telegram username
+    name: "John Doe"                 # Optional: for commit attribution
+    email: "john@example.com"        # Optional: for commit attribution
+  - username: "username2"            # Plain username without name/email also works
+# Backward compatible: plain strings still supported:
+# authorized_users: ["username1", "username2"]
 ask_rules: |                         # System prompt for /ask
 feat_rules: |                        # System prompt for /feat
 fix_rules: |                         # System prompt for /fix
@@ -57,7 +63,12 @@ lark:
   verification_token: "xxx"
   encrypt_key: ""  # Optional, for encrypted events
   webhook_port: 8080
-  authorized_users: ["ou_xxx"]  # Lark user open_ids
+  authorized_users:                  # Lark user open_ids
+    - id: "ou_xxx"                   # Required: Lark open_id
+      name: "John Doe"              # Optional: for commit attribution
+      email: "john@example.com"     # Optional: for commit attribution
+  # Backward compatible: plain strings still supported:
+  # authorized_users: ["ou_xxx"]
   authorized_chats: ["oc_xxx"]  # Lark chat_ids
 
 # Project configuration

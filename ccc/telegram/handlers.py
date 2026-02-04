@@ -17,6 +17,29 @@ from ccc.telegram.messenger import TelegramMessenger
 
 logger = logging.getLogger(__name__)
 
+
+def _get_user_identity_lines(username: str, include_commit_trailer: bool = False) -> str:
+    """Build prompt lines for user identity attribution.
+
+    Args:
+        username: Telegram username
+        include_commit_trailer: If True, add commit trailer instruction
+
+    Returns:
+        Prompt lines string (empty if no name/email configured)
+    """
+    user_info = config.get_user_info(username)
+    if not user_info or not user_info.get("name") or not user_info.get("email"):
+        return ""
+
+    name = user_info["name"]
+    email = user_info["email"]
+    lines = f"\nRequested by: {name} <{email}>"
+    if include_commit_trailer:
+        lines += f'\nInclude "Requested-By: {name} <{email}>" trailer in all git commit messages.'
+    return lines
+
+
 # Global messenger instance
 _messenger = None
 
@@ -39,7 +62,7 @@ def is_authorized(update: Update) -> bool:
 
     logger.info(f"Checking authorization for user: {username}, chat_id: {chat_id}")
 
-    user_authorized = username in config.AUTHORIZED_USERS
+    user_authorized = config.is_user_authorized(username)
     group_authorized = config.is_telegram_group_authorized(chat_id)
 
     return user_authorized and group_authorized
@@ -143,7 +166,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use bot")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -194,20 +217,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Check if this thread has an active worktree context
         thread_key, worktree_info = get_thread_key_with_fallback(update)
 
+        username = update.message.from_user.username
         if worktree_info:
             # Continue conversation in the worktree context
-            await _continue_in_worktree(update, text_without_mention, worktree_info, thread_key)
+            await _continue_in_worktree(update, text_without_mention, worktree_info, thread_key, username=username)
         else:
             # No worktree context, treat as casual conversation
             messenger = get_messenger()
-            await _ask_casual(update, messenger, text_without_mention)
+            await _ask_casual(update, messenger, text_without_mention, username=username)
 
         logger.info(f"Reply sent!")
     else:
         logger.info("Bot was not mentioned in this message")
 
 
-async def _continue_in_worktree(update: Update, user_text: str, worktree_info: dict, thread_key: str) -> None:
+async def _continue_in_worktree(update: Update, user_text: str, worktree_info: dict, thread_key: str, username: str = None) -> None:
     """Continue conversation in an existing worktree context."""
     messenger = get_messenger()
     query_id = worktree_info["query_id"]
@@ -245,10 +269,11 @@ async def _continue_in_worktree(update: Update, user_text: str, worktree_info: d
     output_file = f"/tmp/output_{query_id}_cont_{str(uuid.uuid4())[:4]}.txt"
 
     try:
+        identity_lines = _get_user_identity_lines(username, include_commit_trailer=True) if username else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_text}
 
 Write the output in {output_file}"""
@@ -294,7 +319,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /ask command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -308,18 +333,19 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     potential_project = context.args[0]
     project = config.get_project(potential_project)
 
+    username = update.message.from_user.username
     if project and len(context.args) >= 2:
         # Project-specific query
         project_name = potential_project
         user_text = " ".join(context.args[1:])
-        await _ask_project(update, messenger, project_name, project, user_text)
+        await _ask_project(update, messenger, project_name, project, user_text, username=username)
     else:
         # Casual conversation (no project context)
         user_text = " ".join(context.args)
-        await _ask_casual(update, messenger, user_text)
+        await _ask_casual(update, messenger, user_text, username=username)
 
 
-async def _ask_project(update: Update, messenger, project_name: str, project: dict, user_text: str) -> None:
+async def _ask_project(update: Update, messenger, project_name: str, project: dict, user_text: str, username: str = None) -> None:
     """Handle project-specific /ask query."""
     project_repo = project['project_repo']
     project_workdir = project['project_workdir']
@@ -361,10 +387,11 @@ async def _ask_project(update: Update, messenger, project_name: str, project: di
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        identity_lines = _get_user_identity_lines(username) if username else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Query: {user_text}
 
 Write the output in {output_file}"""
@@ -393,7 +420,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def _ask_casual(update: Update, messenger, user_text: str, existing_session: str = None) -> None:
+async def _ask_casual(update: Update, messenger, user_text: str, existing_session: str = None, username: str = None) -> None:
     """Handle casual conversation /ask query (no project context)."""
     query_id = str(uuid.uuid4())[:8]
 
@@ -428,8 +455,9 @@ async def _ask_casual(update: Update, messenger, user_text: str, existing_sessio
     cwd = "/tmp"
 
     try:
+        identity_lines = _get_user_identity_lines(username) if username else ""
         prompt = f"""You are a helpful assistant. Please respond to the following query.
-
+{identity_lines}
 Query: {user_text}
 
 IMPORTANT: Write your complete response to the file {output_file}. Use the Write tool to create this file with your response."""
@@ -475,7 +503,7 @@ async def cmd_feat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /feat command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -536,10 +564,12 @@ async def cmd_feat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        username = update.message.from_user.username
+        identity_lines = _get_user_identity_lines(username, include_commit_trailer=True)
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -588,7 +618,7 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /fix command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -649,10 +679,12 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        username = update.message.from_user.username
+        identity_lines = _get_user_identity_lines(username, include_commit_trailer=True)
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -701,7 +733,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /plan command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -762,10 +794,12 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        username = update.message.from_user.username
+        identity_lines = _get_user_identity_lines(username, include_commit_trailer=True)
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -817,7 +851,7 @@ async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /feedback command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -928,10 +962,12 @@ async def cmd_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        username = update.message.from_user.username
+        identity_lines = _get_user_identity_lines(username, include_commit_trailer=True)
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -976,7 +1012,7 @@ async def cmd_init(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /init command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1032,7 +1068,7 @@ async def cmd_up(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /up command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1115,7 +1151,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /stop command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1156,7 +1192,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /status command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1237,7 +1273,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /cancel command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1324,7 +1360,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /log command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1399,7 +1435,7 @@ async def cmd_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /cost command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1460,7 +1496,7 @@ async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /cleanup command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1548,7 +1584,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /list command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 
@@ -1658,7 +1694,7 @@ async def cmd_selfupdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not is_authorized(update):
         logger.info("Unauthorized user attempted to use /selfupdate command")
-        authorized_list = ", ".join(config.AUTHORIZED_USERS)
+        authorized_list = ", ".join(config.get_authorized_usernames())
         await reply(update, f"I only respond to {authorized_list}")
         return
 

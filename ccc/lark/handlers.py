@@ -14,6 +14,35 @@ from ccc import process
 logger = logging.getLogger(__name__)
 
 
+def _get_lark_user_identity_lines(user_open_id: str, include_commit_trailer: bool = False) -> str:
+    """Build prompt lines for Lark user identity attribution.
+
+    Args:
+        user_open_id: Lark user open_id
+        include_commit_trailer: If True, add commit trailer instruction
+
+    Returns:
+        Prompt lines string (empty if no name/email configured)
+    """
+    user_info = config.get_lark_user_info(user_open_id)
+    if not user_info or not user_info.get("name") or not user_info.get("email"):
+        return ""
+
+    name = user_info["name"]
+    email = user_info["email"]
+    lines = f"\nRequested by: {name} <{email}>"
+    if include_commit_trailer:
+        lines += f'\nInclude "Requested-By: {name} <{email}>" trailer in all git commit messages.'
+    return lines
+
+
+def _extract_user_open_id(event: dict) -> str:
+    """Extract user_open_id from a Lark event."""
+    sender = event.get("sender", {})
+    sender_id = sender.get("sender_id", {})
+    return sender_id.get("open_id", "")
+
+
 def is_authorized(event: dict) -> bool:
     """Check if the user and chat are authorized to use the bot.
 
@@ -230,6 +259,8 @@ async def handle_message(messenger, event: dict) -> None:
         "root_id": message.get("root_id") or message.get("parent_id"),
     }
 
+    user_open_id = _extract_user_open_id(event)
+
     logger.info(f"Context for reply: {context}")
 
     # Parse command
@@ -247,11 +278,11 @@ async def handle_message(messenger, event: dict) -> None:
 
             if worktree_info:
                 # Continue conversation in the worktree context
-                await _continue_in_worktree(messenger, context, text_without_mention, worktree_info, thread_key)
+                await _continue_in_worktree(messenger, context, text_without_mention, worktree_info, thread_key, user_open_id=user_open_id)
                 return
             else:
                 # No worktree context, treat as casual conversation
-                await _ask_casual(messenger, context, text_without_mention)
+                await _ask_casual(messenger, context, text_without_mention, user_open_id=user_open_id)
                 return
 
         logger.info("Message is not a command and has no content, ignoring")
@@ -281,12 +312,12 @@ async def handle_message(messenger, event: dict) -> None:
 
     handler = handlers.get(command)
     if handler:
-        await handler(messenger, context, args)
+        await handler(messenger, context, args, user_open_id=user_open_id)
     else:
         await messenger.reply(context, f"Unknown command: /{command}. Use /help for available commands.")
 
 
-async def cmd_cleanup(messenger, context: dict, args: list) -> None:
+async def cmd_cleanup(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /cleanup command. Clean up orphan worktrees."""
     import shutil
 
@@ -365,7 +396,7 @@ async def cmd_cleanup(messenger, context: dict, args: list) -> None:
     await messenger.reply(context, "\n".join(lines))
 
 
-async def cmd_list(messenger, context: dict, args: list) -> None:
+async def cmd_list(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /list command. Display registered projects."""
     logger.info("Received /list command")
 
@@ -389,7 +420,7 @@ async def cmd_list(messenger, context: dict, args: list) -> None:
     await messenger.reply(context, "\n".join(lines))
 
 
-async def cmd_help(messenger, context: dict, args: list) -> None:
+async def cmd_help(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /help command."""
     help_text = """Available commands:
 
@@ -452,7 +483,7 @@ async def cmd_help(messenger, context: dict, args: list) -> None:
     await messenger.reply(context, help_text)
 
 
-async def cmd_ask(messenger, context: dict, args: list) -> None:
+async def cmd_ask(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /ask command. Format: /ask [project-name] query
 
     If project-name is provided and exists, ask about that project.
@@ -470,14 +501,14 @@ async def cmd_ask(messenger, context: dict, args: list) -> None:
         # Project-specific query
         project_name = potential_project
         user_text = " ".join(args[1:])
-        await _ask_project(messenger, context, project_name, project, user_text)
+        await _ask_project(messenger, context, project_name, project, user_text, user_open_id=user_open_id)
     else:
         # Casual conversation (no project context)
         user_text = " ".join(args)
-        await _ask_casual(messenger, context, user_text)
+        await _ask_casual(messenger, context, user_text, user_open_id=user_open_id)
 
 
-async def _ask_project(messenger, context: dict, project_name: str, project: dict, user_text: str) -> None:
+async def _ask_project(messenger, context: dict, project_name: str, project: dict, user_text: str, user_open_id: str = "") -> None:
     """Handle project-specific /ask query."""
     project_repo = project['project_repo']
     project_workdir = project['project_workdir']
@@ -522,10 +553,11 @@ async def _ask_project(messenger, context: dict, project_name: str, project: dic
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id) if user_open_id else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Query: {user_text}
 
 Write the output in {output_file}"""
@@ -554,7 +586,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def _ask_casual(messenger, context: dict, user_text: str, existing_session: str = None) -> None:
+async def _ask_casual(messenger, context: dict, user_text: str, existing_session: str = None, user_open_id: str = "") -> None:
     """Handle casual conversation /ask query (no project context)."""
     query_id = str(uuid.uuid4())[:8]
 
@@ -589,8 +621,9 @@ async def _ask_casual(messenger, context: dict, user_text: str, existing_session
     cwd = "/tmp"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id) if user_open_id else ""
         prompt = f"""You are a helpful assistant. Please respond to the following query.
-
+{identity_lines}
 Query: {user_text}
 
 IMPORTANT: Write your complete response to the file {output_file}. Use the Write tool to create this file with your response."""
@@ -626,7 +659,7 @@ IMPORTANT: Write your complete response to the file {output_file}. Use the Write
         cleanup_output_file(output_file)
 
 
-async def _continue_in_worktree(messenger, context: dict, user_text: str, worktree_info: dict, thread_key: str) -> None:
+async def _continue_in_worktree(messenger, context: dict, user_text: str, worktree_info: dict, thread_key: str, user_open_id: str = "") -> None:
     """Continue conversation in an existing worktree context."""
     query_id = worktree_info["query_id"]
     worktree_path = worktree_info["worktree_path"]
@@ -638,7 +671,7 @@ async def _continue_in_worktree(messenger, context: dict, user_text: str, worktr
     # Check if this is a casual conversation context
     if query_id.startswith("casual-") or project_name == "_casual":
         logger.info(f"Continuing casual conversation with session {existing_session}")
-        await _ask_casual(messenger, context, user_text, existing_session)
+        await _ask_casual(messenger, context, user_text, existing_session, user_open_id=user_open_id)
         return
 
     logger.info(f"Continuing in worktree {query_id} for project {project_name}")
@@ -663,10 +696,11 @@ async def _continue_in_worktree(messenger, context: dict, user_text: str, worktr
     output_file = f"/tmp/output_{query_id}_cont_{str(uuid.uuid4())[:4]}.txt"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id, include_commit_trailer=True) if user_open_id else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_text}
 
 Write the output in {output_file}"""
@@ -698,7 +732,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def cmd_feat(messenger, context: dict, args: list) -> None:
+async def cmd_feat(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /feat command. Format: /feat project-name prompt"""
     if len(args) < 2:
         await messenger.reply(context, "Usage: /feat project-name prompt")
@@ -756,10 +790,11 @@ async def cmd_feat(messenger, context: dict, args: list) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id, include_commit_trailer=True) if user_open_id else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -796,7 +831,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def cmd_fix(messenger, context: dict, args: list) -> None:
+async def cmd_fix(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /fix command. Format: /fix project-name prompt"""
     if len(args) < 2:
         await messenger.reply(context, "Usage: /fix project-name prompt")
@@ -854,10 +889,11 @@ async def cmd_fix(messenger, context: dict, args: list) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id, include_commit_trailer=True) if user_open_id else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -894,7 +930,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def cmd_plan(messenger, context: dict, args: list) -> None:
+async def cmd_plan(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /plan command. Format: /plan project-name prompt"""
     if len(args) < 2:
         await messenger.reply(context, "Usage: /plan project-name prompt")
@@ -952,10 +988,11 @@ async def cmd_plan(messenger, context: dict, args: list) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id, include_commit_trailer=True) if user_open_id else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -992,7 +1029,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def cmd_feedback(messenger, context: dict, args: list) -> None:
+async def cmd_feedback(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /feedback command. Format: /feedback [project-name] [job-id] prompt
 
     If project-name is not provided, uses the project and worktree from thread context.
@@ -1102,10 +1139,11 @@ async def cmd_feedback(messenger, context: dict, args: list) -> None:
     output_file = f"/tmp/output_{query_id}.txt"
 
     try:
+        identity_lines = _get_lark_user_identity_lines(user_open_id, include_commit_trailer=True) if user_open_id else ""
         prompt = f"""Project: {project_name}
 Repository: {project_repo}
 Working Directory: {worktree_path}
-
+{identity_lines}
 Task: {user_prompt}
 
 Write the output in {output_file}"""
@@ -1140,7 +1178,7 @@ Write the output in {output_file}"""
         cleanup_output_file(output_file)
 
 
-async def cmd_init(messenger, context: dict, args: list) -> None:
+async def cmd_init(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /init command. Format: /init project-name"""
     if len(args) < 1:
         await messenger.reply(context, "Usage: /init project-name")
@@ -1177,7 +1215,7 @@ async def cmd_init(messenger, context: dict, args: list) -> None:
     await messenger.reply(context, f"Successfully initialized CLAUDE.md for project: {project_name}")
 
 
-async def cmd_up(messenger, context: dict, args: list) -> None:
+async def cmd_up(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /up command. Format: /up [project-name] [branch]
 
     If project-name is not provided, uses the project from thread context.
@@ -1245,7 +1283,7 @@ async def cmd_up(messenger, context: dict, args: list) -> None:
     )
 
 
-async def cmd_stop(messenger, context: dict, args: list) -> None:
+async def cmd_stop(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /stop command. Format: /stop [project-name]
 
     If project-name is not provided, uses the project from thread context.
@@ -1272,12 +1310,12 @@ async def cmd_stop(messenger, context: dict, args: list) -> None:
     await process.kill_project_process(messenger, context, project_name)
 
 
-async def cmd_down(messenger, context: dict, args: list) -> None:
+async def cmd_down(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /down command. Alias for /stop. Format: /down project-name"""
     await cmd_stop(messenger, context, args)
 
 
-async def cmd_status(messenger, context: dict, args: list) -> None:
+async def cmd_status(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /status command. Shows running queries, completed jobs, and processes."""
     from datetime import datetime
     status_lines = []
@@ -1342,7 +1380,7 @@ async def cmd_status(messenger, context: dict, args: list) -> None:
     await messenger.reply(context, "\n".join(status_lines))
 
 
-async def cmd_cancel(messenger, context: dict, args: list) -> None:
+async def cmd_cancel(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /cancel command. Format: /cancel [project-name] [query-id]
 
     If no args and thread has context, cancel queries for that project.
@@ -1417,7 +1455,7 @@ async def cmd_cancel(messenger, context: dict, args: list) -> None:
             await messenger.reply(context, f"Failed to cancel queries for project {project_name}.")
 
 
-async def cmd_log(messenger, context: dict, args: list) -> None:
+async def cmd_log(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /log command. Format: /log [project-name] [lines]
 
     If project-name is not provided, uses the project from thread context.
@@ -1480,7 +1518,7 @@ async def cmd_log(messenger, context: dict, args: list) -> None:
     await messenger.reply(context, output)
 
 
-async def cmd_selfupdate(messenger, context: dict, args: list) -> None:
+async def cmd_selfupdate(messenger, context: dict, args: list, user_open_id: str = "") -> None:
     """Handle /selfupdate command. Updates bot from GitHub and restarts."""
     import sys
     import shutil
