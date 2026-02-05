@@ -64,7 +64,7 @@ def is_authorized(event: dict) -> bool:
     logger.info(f"Authorization result: user={user_authorized}, chat={chat_authorized}")
 
     if not user_authorized:
-        logger.warning(f"User {user_open_id} not in authorized list: {config.LARK_AUTHORIZED_USERS}")
+        logger.warning(f"User {user_open_id} not in authorized list (no matching lark_ouid in AUTHORIZED_USERS)")
     if not chat_authorized:
         logger.warning(f"Chat {chat_id} not in authorized list: {config.LARK_AUTHORIZED_CHATS}")
 

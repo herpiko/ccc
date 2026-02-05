@@ -8,6 +8,22 @@ This is a chat bot (`ccc`) that integrates Claude AI to perform software develop
 
 **Security Notice**: This bot MUST run in an isolated environment (VM, container, or dedicated machine). It has full file system access and executes arbitrary commands via Claude.
 
+## Running the Bot with Python
+
+If venv is not exist
+```
+python3 -m venv venv
+source venv/bin/activate
+pip3 install -r requirements.txt
+python3 -m ccc -c config.yaml
+```
+
+If venv is already exist
+```
+source venv/bin/activate
+python3 -m ccc -c config.yaml
+```
+
 ## Running the Bot
 
 Start the bot:
@@ -37,11 +53,12 @@ All configuration is in `config.yaml`:
 
 ```yaml
 # Shared configuration
-authorized_users:                    # Usernames (shared across platforms)
+authorized_users:                    # Unified user list (Telegram + Lark)
   - username: "username1"            # Required: Telegram username
+    lark_ouid: "ou_xxx"             # Optional: Lark open_id (for Lark auth)
     name: "John Doe"                 # Optional: for commit attribution
     email: "john@example.com"        # Optional: for commit attribution
-  - username: "username2"            # Plain username without name/email also works
+  - username: "username2"            # Minimal entry (no Lark, no identity)
 # Backward compatible: plain strings still supported:
 # authorized_users: ["username1", "username2"]
 ask_rules: |                         # System prompt for /ask
@@ -63,12 +80,6 @@ lark:
   verification_token: "xxx"
   encrypt_key: ""  # Optional, for encrypted events
   webhook_port: 8080
-  authorized_users:                  # Lark user open_ids
-    - id: "ou_xxx"                   # Required: Lark open_id
-      name: "John Doe"              # Optional: for commit attribution
-      email: "john@example.com"     # Optional: for commit attribution
-  # Backward compatible: plain strings still supported:
-  # authorized_users: ["ou_xxx"]
   authorized_chats: ["oc_xxx"]  # Lark chat_ids
 
 # Project configuration
@@ -83,8 +94,8 @@ projects:
 ```
 
 **Authorization**:
-- Telegram: Requires BOTH user in `authorized_users` AND chat in `telegram.authorized_groups`
-- Lark: Requires BOTH user in `lark.authorized_users` AND chat in `lark.authorized_chats`
+- Telegram: Requires BOTH user in `authorized_users` (by `username`) AND chat in `telegram.authorized_groups`
+- Lark: Requires BOTH user in `authorized_users` (by `lark_ouid`) AND chat in `lark.authorized_chats`
 
 **Telegram Privacy Mode**: Must be disabled in @BotFather for group functionality:
 1. Send `/mybots` to @BotFather
