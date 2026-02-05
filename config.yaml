@@ -1,6 +1,12 @@
 # Shared configuration
 authorized_users:
-  - "herpiko"
+  - username: "herpiko"              # Required: Telegram username
+    lark_ouid: "ou_xxx"             # Optional: Lark open_id (for Lark auth)
+    name: "Herpiko Dwi Aguno"       # Optional: for commit attribution
+    email: "herpiko@gmail.com"      # Optional: for commit attribution
+  - username: "neo"                  # Minimal entry (no Lark, no identity)
+# Backward compatible: plain strings still work as username-only entries:
+# authorized_users: ["username1", "username2"]
 
 # Base directory for git worktrees (isolated workspaces for concurrent queries)
 # Default: /tmp/ccc-worktrees
@@ -113,7 +119,6 @@ lark:
   verification_token: "xxx"
   encrypt_key: ""  # Optional, for encrypted events
   webhook_port: 8080
-  authorized_users: ["ou_xxx"]  # Lark user open_ids
   authorized_chats: ["oc_xxx"]  # Lark chat_ids
 
 # Project configuration
