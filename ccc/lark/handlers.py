@@ -281,8 +281,11 @@ async def handle_message(messenger, event: dict) -> None:
                 await _continue_in_worktree(messenger, context, text_without_mention, worktree_info, thread_key, user_open_id=user_open_id)
                 return
             else:
-                # No worktree context, treat as casual conversation
-                await _ask_casual(messenger, context, text_without_mention, user_open_id=user_open_id)
+                # No worktree context - treat as /ask command and reclaim this thread
+                # This allows "@bot project-name question" to work like "/ask project-name question"
+                logger.info(f"No existing context for thread {thread_key}. Treating mention as /ask command.")
+                args = text_without_mention.split()
+                await cmd_ask(messenger, context, args, user_open_id=user_open_id)
                 return
 
         logger.info("Message is not a command and has no content, ignoring")
