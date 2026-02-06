@@ -1,8 +1,8 @@
 # ccc (Claude Code Chat)
 
-A multi-platform bot that integrates Claude AI to help with software development tasks through chat commands. Supports both **Telegram** and **Lark (Feishu)**. This bot can execute Claude Code with dangerous mode enabled to perform complex development tasks like implementing features, fixing bugs, and more. Imagine you are having a software development team but they are not human. Give them instructions then review their work before merge their changes.
+A multi-platform bot that integrates Claude AI to help with software development tasks through chat commands. Supports both **Telegram** and **Lark (Feishu)**. This bot uses the Claude Agent SDK with `bypassPermissions` mode to perform complex development tasks like implementing features, fixing bugs, and more. Imagine you are having a software development team but they are not human. Give them instructions then review their work before merging their changes.
 
-This project was fully written by Claude Code with `--dangerously-skip-permissions` mode enabled. **This bot runs Claude Code with the same mode.**
+This project was fully written by Claude Code.
 
 ## Important Security Notice
 
@@ -24,7 +24,7 @@ This project was fully written by Claude Code with `--dangerously-skip-permissio
 6. **File System**: Bot can modify files in project directories
 7. **Command Execution**: Bot executes arbitrary commands via Claude
 
-The bot executes Claude commands with dangerous mode, which allows it to make arbitrary file system changes, run commands, and potentially perform destructive operations.
+The bot uses the Claude Agent SDK with `bypassPermissions` mode, which allows it to make arbitrary file system changes, run commands, and potentially perform destructive operations.
 
 ## Development Status
 
@@ -34,19 +34,22 @@ This project is subject to changes as it is still in **active and heavy developm
 
 - **Multi-Platform Support**: Works with both Telegram and Lark (Feishu)
 - **Parallel Job Execution**: Run multiple jobs on the same project simultaneously using git worktrees
-- **Multiple Commands**: `/ask`, `/feat`, `/fix`, `/plan`, `/feedback`, `/init`, `/up`, `/stop`, `/status`, `/cancel`, `/log`, `/cost`, `/selfupdate`
+- **Multiple Commands**: `/ask`, `/feat`, `/fix`, `/plan`, `/feedback`, `/init`, `/up`, `/stop`, `/status`, `/cancel`, `/log`, `/cost`, `/cleanup`, `/selfupdate`
 - **Project Management**: Configure multiple projects via YAML
 - **Session Continuity**: `/feedback` continues context from previous `/feat` or `/fix`
+- **Thread Context**: Reply to bot in threads to continue conversations naturally
 - **Process Management**: Spin up and stop project processes
 - **Authorization**: User and group-based access control
 - **Execution Tracking**: Automatic timing and logging
-- **Git Integration**: Automatic repository cloning
+- **Git Integration**: Automatic repository cloning with worktree isolation
 - **System Prompts**: Configurable rules per command type
+- **MCP Integrations**: Connect external tools via MCP servers (e.g., Google Sheets)
+- **Scheduled Reminders**: Configure automated prompts at specific times
 - **Cost Monitoring**: View Claude API usage costs
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - Claude Code CLI installed and configured
 - Telegram Bot API token (from @BotFather) and/or Lark App credentials
 - Git (for repository cloning)
@@ -152,9 +155,15 @@ For detailed Docker setup instructions, troubleshooting, and advanced configurat
 ### config.yaml Structure
 
 ```yaml
-# Shared configuration
+# Shared configuration - Unified user list for both Telegram and Lark
 authorized_users:
-  - "your_username"
+  - username: "telegram_username"      # Required: Telegram username
+    lark_ouid: "ou_xxx"                # Optional: Lark open_id (for Lark auth)
+    name: "John Doe"                   # Optional: for commit attribution
+    email: "john@example.com"          # Optional: for commit attribution
+  - username: "another_user"           # Minimal entry (no Lark, no identity)
+# Backward compatible: plain strings still supported:
+# authorized_users: ["username1", "username2"]
 
 # Base directory for git worktrees (isolated workspaces for concurrent queries)
 # Default: /tmp/ccc-worktrees
@@ -193,8 +202,26 @@ lark:
   verification_token: "xxx"
   encrypt_key: ""  # Optional, for encrypted events
   webhook_port: 8080
-  authorized_users: ["ou_xxx"]  # Lark user open_ids
   authorized_chats: ["oc_xxx"]  # Lark chat_ids
+
+# MCP integrations (optional, global scope - applies to all projects)
+integrations:
+  # Known integration shorthand (e.g. gspreadsheet)
+  - mcp: gspreadsheet
+    service_account: "/path/to/service-account.json"
+    drive_folder_id: "optional_folder_id"       # optional
+  # Generic/custom MCP server (stdio)
+  - mcp: my-custom-server
+    command: "npx"
+    args: ["-y", "@example/mcp-server"]
+    env:
+      API_KEY: "xxx"
+
+# Scheduled reminders (optional)
+reminders:
+  - time: "11:00+7"        # HH:MM with UTC offset (+N or -N)
+    prompt: "The prompt to send to Claude"
+    repeat: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']
 
 # Project configuration
 projects:
@@ -203,6 +230,8 @@ projects:
     project_workdir: "/path/to/workdir"
     project_up: "make run"      # Optional: command to spin up the project
     project_reset: "make purge" # Optional: command to reset project
+    project_endpoint_url: "https://myapp.example.com"  # Optional: URL shown when project starts
+    project_ports: ["3000", "8080"]  # Optional: ports to free up before starting
 ```
 
 ## Usage
@@ -253,12 +282,13 @@ python -m ccc
 
 ### Available Commands
 
-#### `/ask <query>`
-General questions and quick tasks without project context.
+#### `/ask [project-name] <query>`
+Ask questions. With project-name: about that project. Without: casual conversation.
 
-**Example:**
+**Examples:**
 ```
 /ask Explain how async/await works in Python
+/ask my-project Explain the authentication flow
 ```
 
 #### `/feat <project-name> <task>`
@@ -269,8 +299,8 @@ Implement new features in a specific project. Creates a new branch and merge req
 /feat my-project Add user authentication with JWT
 ```
 
-#### `/feedback <project-name> [job-id] <feedback>`
-Continue work on an existing branch with feedback. Optionally specify a job ID to continue a specific job (useful for parallel jobs).
+#### `/feedback [project-name] [job-id] <feedback>`
+Continue work on an existing branch with feedback. Optionally specify a job ID to continue a specific job (useful for parallel jobs). Can also be used by replying in a thread with context.
 
 **Examples:**
 ```
@@ -304,16 +334,17 @@ Initialize CLAUDE.md for a project.
 /init my-project
 ```
 
-#### `/up <project-name>`
-Spin up a project using the configured `project_up` command.
+#### `/up <project-name> [branch]`
+Spin up a project using the configured `project_up` command. Optionally specify a branch.
 
-**Example:**
+**Examples:**
 ```
 /up my-project
+/up my-project feat-123
 ```
 
-#### `/stop <project-name>`
-Stop a running project process.
+#### `/stop [project-name]`
+Stop a running project process. Without project-name: uses thread context.
 
 **Example:**
 ```
@@ -321,15 +352,15 @@ Stop a running project process.
 ```
 
 #### `/status`
-Show all running project processes and Claude queries with their details (query ID, command, elapsed time).
+Show all running project processes, Claude queries, and completed jobs with their details (query ID, command, elapsed time).
 
 **Example:**
 ```
 /status
 ```
 
-#### `/cancel <project-name> [query-id]`
-Cancel running Claude queries. If query-id is specified, cancels only that query. Otherwise cancels all queries for the project.
+#### `/cancel [project-name] [query-id]`
+Cancel running Claude queries. If query-id is specified, cancels only that query. Otherwise cancels all queries for the project. Without args: uses thread context.
 
 **Example:**
 ```
@@ -337,13 +368,21 @@ Cancel running Claude queries. If query-id is specified, cancels only that query
 /cancel my-project abc123    # Cancel specific query
 ```
 
-#### `/log <project-name> [lines]`
-Show the last N lines of a running project's logs (default: 50 lines).
+#### `/log [project-name] [lines]`
+Show the last N lines of a running project's logs (default: 50 lines). Without project-name: uses thread context.
 
 **Example:**
 ```
 /log my-project
 /log my-project 100
+```
+
+#### `/cleanup`
+Clean up orphan worktrees (those without running/completed jobs).
+
+**Example:**
+```
+/cleanup
 ```
 
 #### `/cost`
@@ -354,33 +393,44 @@ Display Claude API usage costs via claude-monitor.
 /cost
 ```
 
+#### `/selfupdate`
+Update bot from GitHub and restart.
+
 ## How It Works
 
 1. User sends a command in an authorized Telegram group or Lark chat
 2. Bot validates user and chat authorization
 3. Bot clones repository if needed (for project commands)
 4. Bot creates an isolated git worktree for the query (enables parallel execution)
-5. Bot executes Claude Code with:
-   - `--dangerously-skip-permissions` flag
-   - `--verbose` flag for detailed output
-   - `--system-prompt` with command-specific rules
+5. Bot executes Claude via the Agent SDK with:
+   - `bypassPermissions` mode for full access
+   - `system_prompt` with command-specific rules
+   - MCP servers if configured
 6. Bot tracks execution time and query status
 7. Bot sends results back to the chat (in thread for Lark)
-8. Worktree is cleaned up after query completion
+8. Thread context is maintained for follow-up conversations
 
 ## Parallel Job Execution
 
 The bot supports running multiple jobs on the same project simultaneously using **git worktrees**. Each query gets its own isolated workspace cloned from the main repository, allowing concurrent development tasks without conflicts.
 
 - Worktrees are created in the `worktree_base` directory (default: `/tmp/ccc-worktrees`)
-- Each worktree is automatically cleaned up after the query completes
+- Worktrees are kept for potential feedback/continuation
 - Use `/status` to see all running queries with their IDs
 - Use `/cancel project-name query-id` to cancel a specific query
+- Use `/cleanup` to remove orphan worktrees
+
+## Thread Context
+
+The bot maintains conversation context per thread:
+- In Lark: Reply in the same thread to continue a conversation naturally
+- Mention the bot without a command prefix to continue in existing context
+- If no context exists, mentions are treated as `/ask`
 
 ## Authorization
 
 The bot enforces **dual authorization**:
-- User must be in `authorized_users` list (or platform-specific authorized users)
+- User must be in `authorized_users` list (by `username` for Telegram, by `lark_ouid` for Lark)
 - Chat must be in `authorized_groups` (Telegram) or `authorized_chats` (Lark)
 
 Both conditions must be met for the bot to respond.
